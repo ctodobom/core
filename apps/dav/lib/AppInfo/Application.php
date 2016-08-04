@@ -110,6 +110,10 @@ class Application extends App {
 			);
 		});
 
+		/*
+		 * Register capabilitiesb
+		 */
+		$container->registerCapability('OCA\DAV\Capabilities');
 	}
 
 	/**
