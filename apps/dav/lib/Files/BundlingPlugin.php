@@ -124,27 +124,19 @@ class BundlingPlugin extends ServerPlugin {
 		$this->request = $request;
 		$this->response = $response;
 
-		//TODO: add emit (beforeBind)
-
 		//validate the request before parsing
 		$this->validateRequest();
 
-		//TODO: ensure to sign in proper classes to this emit
 		if (!$this->server->emit('beforeWriteBundle', [$this->userFilesHome])){
 			throw new Forbidden('beforeWriteBundle preconditions failed');
 		}
 
 		//Update the content handler of the bundle body
 		$this->contentHandler = $this->getContentHandler($this->request);
-		
-		//Create JSON from metadata content in the bundle
-		$bundleMetadata = $this->getBundleMetadata();
 
 		//Process bundle and send a multistatus response
-		$result = $this->processBundle($bundleMetadata);
+		$result = $this->processBundle();
 
-		//TODO: add emit (afterBind)
-		//TODO: add emit (afterCreateFile)
 		return $result;
 	}
 
@@ -162,7 +154,7 @@ class BundlingPlugin extends ServerPlugin {
 	}
 
 	/**
-	 * TODO: description and variables
+	 * Adds to multistatus response properties for specific file
 	 *
 	 * @return void
 	 */
@@ -177,9 +169,7 @@ class BundlingPlugin extends ServerPlugin {
 	 * Get content handler
 	 *
 	 * @param  RequestInterface $request
-	 * @param  String $boundary
-	 * @throws TODO: handle exception
-	 * @return array
+	 * @return \OCA\DAV\Files\MultipartContentsParser
 	 */
 	protected function getContentHandler(RequestInterface $request) {
 		if ($this->contentHandler === null) {
@@ -221,9 +211,8 @@ class BundlingPlugin extends ServerPlugin {
 			throw new Forbidden('Improper Content-type format. Boundary may be missing');
 		}
 		$contentType = trim($contentParts[0]);
-		$expectedContentType = 'multipart/related';
+		$expectedContentType = 'multipart/mixed';
 		if ($contentType != $expectedContentType) {
-			//TODO: handle exception
 			throw new BadRequest(sprintf(
 				'Content-Type must be %s',
 				$expectedContentType
@@ -244,61 +233,11 @@ class BundlingPlugin extends ServerPlugin {
 	}
 
 	/**
-	 * Get the bundle metadata from the request.
-	 *
-	 * Note: MUST be called before getBundleContents, and just one time.
-	 *
-	 * @throws /Sabre\DAV\Exception\BadRequest
-	 * @return array
-	 */
-	private function getBundleMetadata() {
-		$metadataContentHeader = $this->contentHandler->getPartHeaders($this->boundary);
-		if (!isset($metadataContentHeader['content-type'])) {
-			throw new BadRequest('Metadata does not contain content-type header');
-		}
-		$expectedContentType = 'application/json';
-		if (substr($metadataContentHeader['content-type'], 0, strlen($expectedContentType)) != $expectedContentType) {
-			throw new BadRequest(sprintf(
-				'Expected content type of first part is %s. Found %s',
-				$expectedContentType,
-				$metadataContentHeader['content-type']
-			));
-		}
-
-		if (!isset($metadataContentHeader['content-length'])) {
-			throw new BadRequest('Metadata does not contain content-length header');
-		}
-
-		$metaDataContent = $this->contentHandler->streamReadToString($metadataContentHeader['content-length']);
-
-		if (isset($metadataContentHeader['content-md5'])) {
-			//check if the expected metadata is corrupted
-			$contentMD5 = $metadataContentHeader['content-md5'];
-			$hash = md5($metaDataContent);
-			if (!($hash === $contentMD5)) {
-				throw new BadRequest(sprintf(
-					'Received wrong metadata. Expected Content-MD5 %s, expected %s',
-					$contentMD5,
-					$hash
-				));
-			}
-		}
-
-		//rewind to the begining of file for streamCopy and copy stream
-		$jsonContent = json_decode($metaDataContent, true);
-		if ($jsonContent === null) {
-			throw new BadRequest('Unable to parse JSON');
-		}
-
-		return $jsonContent;
-	}
-
-	/**
 	 * Process multipart contents and send appropriete response
 	 *
 	 * @return boolean
 	 */
-	private function processBundle($bundleMetadata) {
+	private function processBundle() {
 		$bundleResponseProperties = array();
 
 		while(!$this->contentHandler->getEndDelimiterReached()) {
@@ -315,89 +254,89 @@ class BundlingPlugin extends ServerPlugin {
 				break;
 			}
 
-			if (!isset($bundleContentHeader['content-length'])) {
-				throw new BadRequest('File header does not contain Content-Length. Unable to parse whole bundle request');
+			if (!isset($bundleContentHeader['x-oc-method'])) {
+				throw new BadRequest('File metadata does not contain required key - value pair containing x-oc-method');
 			}
-			
-			if (!isset($bundleContentHeader['content-id'])) {
-				//part is multipart/related, but header contains too less data to create file or signilizes EndDelimiterReached, ignore
-				$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);
-				continue;
-			}
-			
-			//try to match content part header to bundleMetadata for that bundleContent
-			$binaryID = $bundleContentHeader['content-id'];
-			if (!isset($bundleMetadata[$binaryID])){
-				//part is multipart/related, but content-id in header does not match any of the files
-				$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);
-				continue;
-			}
-			$fileAttributes = $bundleMetadata[$binaryID];
 
-			//process oc-path
-			if (!isset($fileAttributes['oc-path'])){
+			//process X-OC-Path
+			if (!isset($bundleContentHeader['x-oc-path'])){
 				//without oc-path we cannot contruct multistatus response
-				throw new BadRequest('File metadata does not contain required key - value pair containing oc-path');
+				throw new BadRequest('File metadata does not contain required key - value pair containing x-oc-path');
 			}
 
-			//get oc-path of the file
-			$filePath = $fileAttributes['oc-path'];
-			list($folderPath, $fileName) = URLUtil::splitPath($filePath);
+			//get X-OC-Path of the file
+			$filePath = $bundleContentHeader['x-oc-path'];
 
-			if ($folderPath === ''){
-				$fullFolderPath = $this->userFilesHome;
-			}
-			else{
-				$fullFolderPath = $this->userFilesHome . '/' . $folderPath;
-			}
+			switch(strtolower($bundleContentHeader['x-oc-method'])){
+				case 'put':
+					if (!isset($bundleContentHeader['content-length'])) {
+						throw new BadRequest('File header does not contain Content-Length. Unable to parse whole bundle request');
+					}
 
-			//validate parent folder
-			if (!isset($this->cacheValidParents[$folderPath])){
-				$this->cacheValidParents[$folderPath] = ($this->server->tree->nodeExists($fullFolderPath) && $this->fileView->isCreatable($folderPath));
-			}
+					list($folderPath, $fileName) = URLUtil::splitPath($filePath);
 
-			if (!$this->cacheValidParents[$folderPath]) {
-				$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);	
-				$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', 'File creation on not existing or without creation permission parent folder is not permitted');
-				continue;
-			}
+					if ($folderPath === ''){
+						$fullFolderPath = $this->userFilesHome;
+					}
+					else{
+						$fullFolderPath = $this->userFilesHome . '/' . $folderPath;
+					}
 
-			//get absolute path of the file
-			$absoluteFilePath = $this->fileView->getAbsolutePath($folderPath) . '/' . $fileName;
-			$info = new FileInfo($absoluteFilePath, null, null, array(), null);
-			$node = new BundledFile($this->fileView, $info);
+					//validate parent folder
+					if (!isset($this->cacheValidParents[$folderPath])){
+						$this->cacheValidParents[$folderPath] = ($this->server->tree->nodeExists($fullFolderPath) && $this->fileView->isCreatable($folderPath));
+					}
 
-			try{
-				$target = $node->getPartFileResource();
-			} catch (\Exception $e) {
-				$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);
-				$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
-				continue;
-			}
-			
-			if (!$this->contentHandler->streamReadToStream($target, $bundleContentHeader['content-length'])){
-				$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', 'Error reading the file contents');
-			}
-			fclose($target);
+					if (!$this->cacheValidParents[$folderPath]) {
+						$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);
+						$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', 'File creation on not existing or without creation permission parent folder is not permitted');
+						continue;
+					}
 
-			try{
-				$node->acquireLock(ILockingProvider::LOCK_SHARED);
-			} catch (\Exception $e) {
-				$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
-				continue;
-			}
+					//get absolute path of the file
+					$absoluteFilePath = $this->fileView->getAbsolutePath($folderPath) . '/' . $fileName;
+					$info = new FileInfo($absoluteFilePath, null, null, array(), null);
+					$node = new BundledFile($this->fileView, $info);
 
-			try{
-				$properties = $node->createFile($fileAttributes);
-			} catch (\Exception $e) {
-				$node->releaseLock(ILockingProvider::LOCK_SHARED);
-				$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
-				continue;
-			}
+					try{
+						$target = $node->getPartFileResource();
+					} catch (\Exception $e) {
+						$this->contentHandler->multipartContentSeekToContentLength($bundleContentHeader['content-length']);
+						$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
+						continue;
+					}
 
-			$node->releaseLock(ILockingProvider::LOCK_SHARED);
-			$this->server->tree->markDirty($filePath);
-			$this->handleFileMultiStatus($bundleResponseProperties, $filePath, 200, $properties);
+					if (!$this->contentHandler->streamReadToStream($target, $bundleContentHeader['content-length'])){
+						$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', 'Error reading the file contents');
+						fclose($target);
+						continue;
+					}
+					fclose($target);
+
+					//getLock for file as in dav/lib/Connector/Sabre/LockPlugin.php
+					try{
+						$node->acquireLock(ILockingProvider::LOCK_SHARED);
+					} catch (\Exception $e) {
+						$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
+						continue;
+					}
+
+					try{
+						$properties = $node->createFile($bundleContentHeader);
+					} catch (\Exception $e) {
+						$node->releaseLock(ILockingProvider::LOCK_SHARED);
+						$this->handleFileMultiStatusError($bundleResponseProperties, $filePath, 400, 'Sabre\DAV\Exception\BadRequest', $e->getMessage());
+						continue;
+					}
+
+					//release lock as in dav/lib/Connector/Sabre/LockPlugin.php
+					$node->releaseLock(ILockingProvider::LOCK_SHARED);
+					$this->server->tree->markDirty($filePath);
+					$this->handleFileMultiStatus($bundleResponseProperties, $filePath, 200, $properties);
+					break;
+				default:
+					break;
+			}
 		}
 
 		//multistatus response anounced
