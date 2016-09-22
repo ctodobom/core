@@ -29,6 +29,8 @@ class LastSeenTest extends TestCase {
 	/** @var \PHPUnit_Framework_MockObject_MockObject */
 	protected $userManager;
 	/** @var \PHPUnit_Framework_MockObject_MockObject */
+	protected $connection;
+	/** @var \PHPUnit_Framework_MockObject_MockObject */
 	protected $consoleInput;
 	/** @var \PHPUnit_Framework_MockObject_MockObject */
 	protected $consoleOutput;
@@ -39,14 +41,18 @@ class LastSeenTest extends TestCase {
 	protected function setUp() {
 		parent::setUp();
 
+		/** @var \OCP\IUserManager $userManager */
 		$userManager = $this->userManager = $this->getMockBuilder('OCP\IUserManager')
 			->disableOriginalConstructor()
 			->getMock();
+
+		/** @var \OCP\IDBConnection $connection */
+		$connection = $this->connection = $this->createMock('OCP\IDBConnection');
+
 		$this->consoleInput = $this->createMock('Symfony\Component\Console\Input\InputInterface');
 		$this->consoleOutput = $this->createMock('Symfony\Component\Console\Output\OutputInterface');
 
-		/** @var \OCP\IUserManager $userManager */
-		$this->command = new LastSeen($userManager);
+		$this->command = new LastSeen($userManager, $connection);
 	}
 
 	public function validUserLastSeen() {
@@ -67,6 +73,44 @@ class LastSeenTest extends TestCase {
 		$user->expects($this->once())
 			->method('getLastLogin')
 			->willReturn($lastSeen);
+
+		$queryBuilder = $this->createMock('OCP\DB\QueryBuilder\IQueryBuilder');
+
+		$this->connection->expects($this->once())
+			->method('getQueryBuilder')
+			->will($this->returnValue($queryBuilder));
+
+        $queryBuilder->expects($this->at(0))
+			->method('select')
+			->with(['userid', 'configvalue'])
+			->will($this->returnValue($queryBuilder));
+        $queryBuilder->expects($this->at(1))
+			->method('from')
+			->with('preferences')
+			->will($this->returnValue($queryBuilder));
+		$queryBuilder->expects($this->at(2))
+			->method('where')
+			->will($this->returnValue($queryBuilder));
+		$queryBuilder->expects($this->at(3))
+			->method('andWhere')
+			->will($this->returnValue($queryBuilder));
+		$queryBuilder->expects($this->at(4))
+			->method('orderBy')
+			->with('configvalue', 'DESC')
+			->will($this->returnValue($queryBuilder));
+
+		$queryBuilder->expects($this->at(5))
+			->method('andWhere')
+			// userid
+			->will($this->returnValue($queryBuilder));
+		$queryBuilder->expects($this->at(6))
+			->method('setMaxResults')
+			->with(10)
+			->will($this->returnValue($queryBuilder));
+
+		$queryBuilder->expects($this->at(7))
+			->method('execute')
+			->will($this->returnValue(['userid' => 'user', 'lastLogin' => $lastSeen]));
 
 		$this->userManager->expects($this->once())
 			->method('get')
